@@ -428,6 +428,12 @@ func (ctrl *ApplicationController) handleObjectUpdated(managedByApp map[string]b
 			continue
 		}
 
+		// make sure application is not being deleted and being syncing
+		if app.DeletionTimestamp == nil && app.Operation == nil && (app.Spec.SyncPolicy == nil || app.Spec.SyncPolicy.Automated == nil || !app.Spec.SyncPolicy.Automated.SelfHeal) {
+			// Don't force refresh app if app is not automated and self-heal is disabled
+			continue
+		}
+
 		level := ComparisonWithNothing
 		if isManagedResource {
 			level = CompareWithRecent
@@ -1765,6 +1771,7 @@ func (ctrl *ApplicationController) needRefreshAppStatus(app *appv1.Application, 
 
 	softExpired := app.Status.ReconciledAt == nil || app.Status.ReconciledAt.Add(statusRefreshTimeout).Before(time.Now().UTC())
 	hardExpired := (app.Status.ReconciledAt == nil || app.Status.ReconciledAt.Add(statusHardRefreshTimeout).Before(time.Now().UTC())) && statusHardRefreshTimeout.Seconds() != 0
+	appNeedAutoRefresh := app.Spec.SyncPolicy != nil && app.Spec.SyncPolicy.Automated != nil
 
 	if requestedType, ok := app.IsRefreshRequested(); ok {
 		compareWith = CompareWithLatestForceResolve
@@ -1772,7 +1779,7 @@ func (ctrl *ApplicationController) needRefreshAppStatus(app *appv1.Application, 
 		refreshType = requestedType
 		reason = fmt.Sprintf("%s refresh requested", refreshType)
 	} else {
-		if !currentSourceEqualsSyncedSource(app) {
+		if appNeedAutoRefresh && !currentSourceEqualsSyncedSource(app) {
 			reason = "spec.source differs"
 			compareWith = CompareWithLatestForceResolve
 			if app.Spec.HasMultipleSources() {
@@ -1791,11 +1798,11 @@ func (ctrl *ApplicationController) needRefreshAppStatus(app *appv1.Application, 
 				reason = fmt.Sprintf("comparison expired, requesting hard refresh. reconciledAt: %v, expiry: %v", reconciledAtStr, statusHardRefreshTimeout)
 				refreshType = appv1.RefreshTypeHard
 			}
-		} else if !app.Spec.Destination.Equals(app.Status.Sync.ComparedTo.Destination) {
+		} else if appNeedAutoRefresh && !app.Spec.Destination.Equals(app.Status.Sync.ComparedTo.Destination) {
 			reason = "spec.destination differs"
-		} else if app.HasChangedManagedNamespaceMetadata() {
+		} else if appNeedAutoRefresh && app.HasChangedManagedNamespaceMetadata() {
 			reason = "spec.syncPolicy.managedNamespaceMetadata differs"
-		} else if !app.Spec.IgnoreDifferences.Equals(app.Status.Sync.ComparedTo.IgnoreDifferences) {
+		} else if appNeedAutoRefresh && !app.Spec.IgnoreDifferences.Equals(app.Status.Sync.ComparedTo.IgnoreDifferences) {
 			reason = "spec.ignoreDifferences differs"
 		} else if requested, level := ctrl.isRefreshRequested(app.QualifiedName()); requested {
 			compareWith = level
